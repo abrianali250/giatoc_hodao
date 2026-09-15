@@ -1,0 +1,8 @@
+{
+  "name": "Remix Gia Phả Gia Tộc Họ Đào",
+  "description": "Ứng dụng tra cứu, quản lý và hiển thị cây gia phả gia tộc Họ Đào trực quan, dễ sử dụng cho mọi thế hệ.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

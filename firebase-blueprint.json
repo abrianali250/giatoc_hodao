@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "Member": {
+      "title": "Member",
+      "description": "Thành viên gia phả dòng họ Đào",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "generation": { "type": "number" },
+        "gender": { "type": "string", "enum": ["male", "female", "other"] },
+        "sourceVerified": { "type": "boolean" },
+        "birthDate": { "type": "string", "maxLength": 100 },
+        "deathDate": { "type": "string", "maxLength": 100 },
+        "alias": { "type": "string", "maxLength": 150 },
+        "branchName": { "type": "string", "maxLength": 150 },
+        "notes": { "type": "string", "maxLength": 3000 },
+        "verificationNotes": { "type": "string", "maxLength": 3000 },
+        "avatar": { "type": "string", "maxLength": 1000 },
+        "fatherId": { "type": "string", "maxLength": 128 },
+        "motherId": { "type": "string", "maxLength": 128 },
+        "isAdopted": { "type": "boolean" },
+        "isAlive": { "type": "boolean" },
+        "orderInFamily": { "type": "number" },
+        "spouseIds": { "type": "array" },
+        "childrenIds": { "type": "array" }
+      },
+      "required": ["id", "fullName", "generation", "gender", "sourceVerified"]
+    },
+    "GenealogyMeta": {
+      "title": "GenealogyMeta",
+      "description": "Metadata và trạng thái cập nhật của gia tộc Họ Đào",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string", "maxLength": 100 },
+        "totalMembers": { "type": "number" },
+        "version": { "type": "number" }
+      },
+      "required": ["updatedAt", "totalMembers"]
+    }
+  },
+  "firestore": {
+    "/members/{memberId}": {
+      "schema": "Member",
+      "description": "Tập hợp tất cả thành viên trong gia tộc Họ Đào"
+    },
+    "/meta/{metaId}": {
+      "schema": "GenealogyMeta",
+      "description": "Thông tin trạng thái cập nhật của gia tộc"
+    }
+  }
+}

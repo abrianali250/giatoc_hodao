@@ -1,0 +1,67 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidMember(data) {
+      return data.keys().hasAll(['id', 'fullName', 'generation', 'gender', 'sourceVerified']) &&
+        data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+        data.fullName is string && data.fullName.size() > 0 && data.fullName.size() <= 120 &&
+        data.generation is int && data.generation >= 1 && data.generation <= 50 &&
+        (data.gender == 'male' || data.gender == 'female' || data.gender == 'other') &&
+        data.sourceVerified is bool &&
+        (!('fatherId' in data) || data.fatherId == null || (data.fatherId is string && data.fatherId.size() <= 128)) &&
+        (!('motherId' in data) || data.motherId == null || (data.motherId is string && data.motherId.size() <= 128)) &&
+        (!('birthDate' in data) || data.birthDate == null || (data.birthDate is string && data.birthDate.size() <= 100)) &&
+        (!('deathDate' in data) || data.deathDate == null || (data.deathDate is string && data.deathDate.size() <= 100)) &&
+        (!('alias' in data) || data.alias == null || (data.alias is string && data.alias.size() <= 150)) &&
+        (!('branchName' in data) || data.branchName == null || (data.branchName is string && data.branchName.size() <= 150)) &&
+        (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 3000)) &&
+        (!('verificationNotes' in data) || data.verificationNotes == null || (data.verificationNotes is string && data.verificationNotes.size() <= 3000)) &&
+        (!('avatar' in data) || data.avatar == null || (data.avatar is string && data.avatar.size() <= 1000)) &&
+        (!('isAdopted' in data) || data.isAdopted == null || data.isAdopted is bool) &&
+        (!('isAlive' in data) || data.isAlive == null || data.isAlive is bool) &&
+        (!('orderInFamily' in data) || data.orderInFamily == null || data.orderInFamily is int) &&
+        (!('spouseIds' in data) || (data.spouseIds is list && data.spouseIds.size() <= 30)) &&
+        (!('childrenIds' in data) || (data.childrenIds is list && data.childrenIds.size() <= 100));
+    }
+
+    function isValidMeta(data) {
+      return data.keys().hasAll(['updatedAt', 'totalMembers']) &&
+        data.updatedAt is string && data.updatedAt.size() <= 100 &&
+        data.totalMembers is int && data.totalMembers >= 0 && data.totalMembers <= 10000;
+    }
+
+    // Public clan family tree members - read by all clan visitors
+    match /members/{memberId} {
+      allow read: if true;
+      allow create: if isValidId(memberId) && isValidMember(incoming()) && incoming().id == memberId;
+      allow update: if isValidId(memberId) && isValidMember(incoming()) && incoming().id == memberId;
+      allow delete: if isValidId(memberId);
+    }
+
+    // Genealogy metadata & sync state
+    match /meta/{metaId} {
+      allow read: if true;
+      allow write: if isValidId(metaId) && isValidMeta(incoming());
+    }
+  }
+}
