@@ -41,9 +41,17 @@ export const TreeView: React.FC<TreeViewProps> = ({
   const [scale, setScale] = useState<number>(0.85);
   const [position, setPosition] = useState<{ x: number; y: number }>({ x: 40, y: 30 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isWheeling, setIsWheeling] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const [jumpMemberId, setJumpMemberId] = useState<string>('');
+
+  // Keep refs synchronized to latest values for event listeners
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const positionRef = useRef(position);
+  positionRef.current = position;
+  const wheelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Refs for tracking pinch-to-zoom & touch pan on mobile
   const touchStateRef = useRef<{
@@ -125,24 +133,47 @@ export const TreeView: React.FC<TreeViewProps> = ({
     setCollapsedIds(idsToCollapse);
   };
 
-  // Zoom controls
-  const handleZoomIn = () => setScale((s) => Math.min(s * 1.2, 2.2));
-  const handleZoomOut = () => setScale((s) => Math.max(s / 1.2, 0.25));
-  const handleResetZoom = () => {
-    setScale(0.85);
-    centerTree();
-  };
+  // Zoom focal helper (zooms in/out keeping focal point static in container viewport)
+  const applyFocalZoom = useCallback((factor: number, focalPoint?: { x: number; y: number }) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const focalX = focalPoint ? focalPoint.x : rect.width / 2;
+    const focalY = focalPoint ? focalPoint.y : rect.height / 2;
+
+    const currentScale = scaleRef.current;
+    const currentPos = positionRef.current;
+
+    const newScale = Math.min(Math.max(currentScale * factor, 0.25), 2.5);
+    if (newScale === currentScale) return;
+
+    const scaleRatio = newScale / currentScale;
+    const newX = focalX - (focalX - currentPos.x) * scaleRatio;
+    const newY = focalY - (focalY - currentPos.y) * scaleRatio;
+
+    setScale(newScale);
+    setPosition({ x: newX, y: newY });
+  }, []);
+
+  // Zoom controls focusing on center of visible canvas
+  const handleZoomIn = () => applyFocalZoom(1.2);
+  const handleZoomOut = () => applyFocalZoom(1 / 1.2);
 
   // Center tree in container view
-  const centerTree = useCallback(() => {
+  const centerTree = useCallback((targetScale?: number) => {
     if (!containerRef.current || !layoutRoot) return;
     const containerWidth = containerRef.current.clientWidth;
-    const rootCenterX = (layoutRoot.x + layoutRoot.width / 2) * scale;
+    const s = targetScale ?? scaleRef.current;
+    const rootCenterX = (layoutRoot.x + layoutRoot.width / 2) * s;
     setPosition({
       x: Math.max(20, containerWidth / 2 - rootCenterX),
       y: 40
     });
-  }, [layoutRoot, scale]);
+  }, [layoutRoot]);
+
+  const handleResetZoom = () => {
+    setScale(0.85);
+    centerTree(0.85);
+  };
 
   // Jump to specific member on the tree
   const handleJumpToMember = (targetId: string) => {
@@ -166,21 +197,29 @@ export const TreeView: React.FC<TreeViewProps> = ({
         const containerWidth = containerRef.current.clientWidth;
         const containerHeight = containerRef.current.clientHeight;
 
-        const targetX = targetNode.x * scale;
-        const targetY = targetNode.y * scale;
+        const currentScale = scaleRef.current;
+        const targetX = targetNode.x * currentScale;
+        const targetY = targetNode.y * currentScale;
 
         setPosition({
-          x: containerWidth / 2 - targetX - (targetNode.width / 2) * scale,
-          y: containerHeight / 2 - targetY - (targetNode.height / 2) * scale
+          x: containerWidth / 2 - targetX - (targetNode.width / 2) * currentScale,
+          y: containerHeight / 2 - targetY - (targetNode.height / 2) * currentScale
         });
       }
     }, 50);
   };
 
-  // Auto center on initial mount
+  // Auto center on initial mount or when root ancestor changes (never re-run on zoom)
+  const hasInitialCentered = useRef(false);
+  const prevRootIdRef = useRef<string>('');
+
   useEffect(() => {
-    centerTree();
-  }, [centerTree]);
+    if (layoutRoot && (!hasInitialCentered.current || prevRootIdRef.current !== layoutRoot.id)) {
+      hasInitialCentered.current = true;
+      prevRootIdRef.current = layoutRoot.id;
+      centerTree();
+    }
+  }, [layoutRoot, centerTree]);
 
   // Center on highlighted member when requested from outside (e.g. search view)
   useEffect(() => {
@@ -318,12 +357,42 @@ export const TreeView: React.FC<TreeViewProps> = ({
     };
   }, [position, scale]);
 
-  // Wheel zoom handler
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-    setScale((s) => Math.min(Math.max(s * zoomFactor, 0.25), 2.2));
-  };
+  // Non-passive wheel event listener for focal zoom directly centered on the mouse cursor
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const focalX = e.clientX - rect.left;
+      const focalY = e.clientY - rect.top;
+
+      const currentScale = scaleRef.current;
+      const currentPos = positionRef.current;
+
+      const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      const newScale = Math.min(Math.max(currentScale * zoomFactor, 0.25), 2.5);
+      if (newScale === currentScale) return;
+
+      const scaleRatio = newScale / currentScale;
+      const newX = focalX - (focalX - currentPos.x) * scaleRatio;
+      const newY = focalY - (focalY - currentPos.y) * scaleRatio;
+
+      setIsWheeling(true);
+      if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
+      wheelTimeoutRef.current = setTimeout(() => setIsWheeling(false), 120);
+
+      setScale(newScale);
+      setPosition({ x: newX, y: newY });
+    };
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
+    };
+  }, []);
 
   // Sort members for quick jump select
   const sortedMembers = useMemo(() => {
@@ -439,7 +508,6 @@ export const TreeView: React.FC<TreeViewProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onWheel={handleWheel}
         className={`relative w-full h-full cursor-grab touch-none ${
           isDragging ? 'cursor-grabbing' : ''
         }`}
@@ -456,7 +524,7 @@ export const TreeView: React.FC<TreeViewProps> = ({
             transformOrigin: '0 0',
             width: bounds.maxX + 400,
             height: bounds.maxY + 300,
-            transition: isDragging ? 'none' : 'transform 0.12s ease-out'
+            transition: (isDragging || isWheeling) ? 'none' : 'transform 0.15s ease-out'
           }}
           className="absolute top-0 left-0"
         >

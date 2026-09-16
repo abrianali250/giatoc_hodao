@@ -20,6 +20,43 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 const targetDatabaseId = (firebaseConfig as any)?.firestoreDatabaseId;
 export const db = targetDatabaseId ? getFirestore(app, targetDatabaseId) : getFirestore(app);
 
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+  };
+}
+
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: null,
+      email: null,
+      emailVerified: null,
+      isAnonymous: null
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 /**
  * Validate connection to Firestore as required by system instructions
  */
@@ -107,34 +144,46 @@ export async function bulkUploadMembersToFirestore(membersList: Member[]): Promi
       batch.set(docRef, sanitizeMember(member));
     });
 
-    await batch.commit();
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, 'members');
+    }
   }
 
   // Update metadata
-  const metaRef = doc(db, 'meta', 'status');
-  await setDoc(metaRef, {
-    updatedAt: new Date().toISOString(),
-    totalMembers: membersList.length
-  });
+  try {
+    const metaRef = doc(db, 'meta', 'status');
+    await setDoc(metaRef, {
+      updatedAt: new Date().toISOString(),
+      totalMembers: membersList.length
+    });
+  } catch (error) {
+    console.warn('Lỗi cập nhật meta status:', error);
+  }
 }
 
 /**
  * Save or update a single member in Firestore
  */
 export async function saveMemberToFirestore(member: Member, allMembersCount?: number): Promise<void> {
-  const memberRef = doc(db, 'members', member.id);
-  await setDoc(memberRef, sanitizeMember(member), { merge: true });
+  try {
+    const memberRef = doc(db, 'members', member.id);
+    await setDoc(memberRef, sanitizeMember(member), { merge: true });
 
-  if (allMembersCount !== undefined) {
-    const metaRef = doc(db, 'meta', 'status');
-    await setDoc(
-      metaRef,
-      {
-        updatedAt: new Date().toISOString(),
-        totalMembers: allMembersCount
-      },
-      { merge: true }
-    );
+    if (allMembersCount !== undefined) {
+      const metaRef = doc(db, 'meta', 'status');
+      await setDoc(
+        metaRef,
+        {
+          updatedAt: new Date().toISOString(),
+          totalMembers: allMembersCount
+        },
+        { merge: true }
+      );
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `members/${member.id}`);
   }
 }
 
@@ -142,19 +191,85 @@ export async function saveMemberToFirestore(member: Member, allMembersCount?: nu
  * Delete a single member from Firestore
  */
 export async function deleteMemberFromFirestore(memberId: string, remainingCount?: number): Promise<void> {
-  const memberRef = doc(db, 'members', memberId);
-  await deleteDoc(memberRef);
+  try {
+    const memberRef = doc(db, 'members', memberId);
+    await deleteDoc(memberRef);
 
-  if (remainingCount !== undefined) {
-    const metaRef = doc(db, 'meta', 'status');
-    await setDoc(
-      metaRef,
-      {
-        updatedAt: new Date().toISOString(),
-        totalMembers: remainingCount
-      },
-      { merge: true }
-    );
+    if (remainingCount !== undefined) {
+      const metaRef = doc(db, 'meta', 'status');
+      await setDoc(
+        metaRef,
+        {
+          updatedAt: new Date().toISOString(),
+          totalMembers: remainingCount
+        },
+        { merge: true }
+      );
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `members/${memberId}`);
+  }
+}
+
+/**
+ * Permanently delete a member from Firestore and update all remaining members whose
+ * relations (fatherId, motherId, spouseIds, childrenIds) were adjusted.
+ * This guarantees that when the page is refreshed (F5), the deleted member NEVER reappears.
+ */
+export async function deleteMemberAndSyncToFirestore(
+  deletedMemberId: string,
+  updatedMembersList: Member[]
+): Promise<void> {
+  // 1. Explicitly delete the member's Firestore document
+  try {
+    const memberRef = doc(db, 'members', deletedMemberId);
+    await deleteDoc(memberRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `members/${deletedMemberId}`);
+  }
+
+  // 2. Upload remaining members so unlinked relations in parents/children/spouses are synced
+  await bulkUploadMembersToFirestore(updatedMembersList);
+}
+
+/**
+ * Fully reconcile and synchronize the members collection in Firestore with the given list.
+ * Any documents currently in Firestore that are NOT in `membersList` will be permanently deleted!
+ * All members in `membersList` will be updated/saved.
+ * Used for Full Sync, Restore to Original, or JSON Backup Import.
+ */
+export async function syncFullTreeToFirestore(membersList: Member[]): Promise<void> {
+  try {
+    const membersColl = collection(db, 'members');
+    const snapshot = await getDocs(membersColl);
+
+    const desiredIds = new Set(membersList.map((m) => m.id));
+    const idsToDelete: string[] = [];
+
+    snapshot.forEach((docSnap) => {
+      if (!desiredIds.has(docSnap.id)) {
+        idsToDelete.push(docSnap.id);
+      }
+    });
+
+    // Delete obsolete documents in batches
+    if (idsToDelete.length > 0) {
+      console.log(`Đang dọn sạch ${idsToDelete.length} tài liệu cũ không thuộc danh sách trên Firestore...`);
+      const BATCH_SIZE = 400;
+      for (let i = 0; i < idsToDelete.length; i += BATCH_SIZE) {
+        const chunk = idsToDelete.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach((id) => {
+          batch.delete(doc(db, 'members', id));
+        });
+        await batch.commit();
+      }
+    }
+
+    // Upload/update all members
+    await bulkUploadMembersToFirestore(membersList);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'members');
   }
 }
 

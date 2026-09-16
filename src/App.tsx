@@ -27,7 +27,9 @@ import {
   testFirestoreConnection,
   subscribeToFirestore,
   bulkUploadMembersToFirestore,
-  loadMembersFromFirestore
+  loadMembersFromFirestore,
+  deleteMemberAndSyncToFirestore,
+  syncFullTreeToFirestore
 } from './utils/firestoreService';
 import { Server, RefreshCw, ExternalLink, Database } from 'lucide-react';
 
@@ -101,7 +103,7 @@ export default function App() {
   const handleManualCloudPush = async () => {
     setIsCloudSyncing(true);
     try {
-      await bulkUploadMembersToFirestore(members);
+      await syncFullTreeToFirestore(members);
       const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
       setLastCloudSyncTime(timeStr);
       localStorage.setItem('HO_DAO_LAST_CLOUD_SYNC', timeStr);
@@ -247,11 +249,14 @@ export default function App() {
 
     setIsCloudSyncing(true);
     try {
-      await bulkUploadMembersToFirestore(updated);
+      await deleteMemberAndSyncToFirestore(memberId, updated);
       const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
       setLastCloudSyncTime(timeStr);
+      localStorage.setItem('HO_DAO_LAST_CLOUD_SYNC', timeStr);
+      setCloudStatus('connected');
     } catch (err) {
       console.error('Lỗi đồng bộ mây khi xóa:', err);
+      showToast('Đã xóa trong bộ nhớ tạm nhưng có lỗi đồng bộ máy chủ đám mây', 'error');
     } finally {
       setIsCloudSyncing(false);
     }
@@ -296,9 +301,10 @@ export default function App() {
 
     setIsCloudSyncing(true);
     try {
-      await bulkUploadMembersToFirestore(resetList);
+      await syncFullTreeToFirestore(resetList);
       const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
       setLastCloudSyncTime(timeStr);
+      localStorage.setItem('HO_DAO_LAST_CLOUD_SYNC', timeStr);
       showToast('Đã đồng bộ lại dữ liệu gốc lên máy chủ đám mây!', 'success');
     } catch (err) {
       console.error('Lỗi đồng bộ mây khi khôi phục gốc:', err);
@@ -317,9 +323,10 @@ export default function App() {
 
     setIsCloudSyncing(true);
     try {
-      await bulkUploadMembersToFirestore(imported);
+      await syncFullTreeToFirestore(imported);
       const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
       setLastCloudSyncTime(timeStr);
+      localStorage.setItem('HO_DAO_LAST_CLOUD_SYNC', timeStr);
       showToast(`Đã lưu ${imported.length} thành viên lên máy chủ đám mây!`, 'success');
     } catch (err) {
       console.error('Lỗi đồng bộ mây khi nạp dữ liệu:', err);
